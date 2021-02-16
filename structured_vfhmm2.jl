@@ -90,12 +90,11 @@ function forward_backward(
             ξ[m,k,j,t] = α[k,t,m] * fhmm.P[k,j,m] * β[j,t+1,m] * h[j,t+1,m]
           end
         end
+        ξ[m,:,:,t] ./= sum(ξ[m,:,:,t])
       end
     end
     γ .+= ϵ
     γ[:,:,:] ./= sum(γ[:,:,:], dims=2) 
-    
-    #  ξ[m,:,:,t] ./= sum(ξ[m,:,:,t])
 
     #display("γ")
     #display(γ)
@@ -114,8 +113,8 @@ function update_variational_parameters(
 
     C⁻¹::Matrix{Float64} = fhmm.C^-1
     
-    #display("C⁻¹")
-    #display(C⁻¹)
+    display("C⁻¹")
+    display(C⁻¹)
 
     T=size(Y)[2]
     K = fhmm.K
@@ -153,15 +152,17 @@ function update_variational_parameters(
                     #display(fhmm.W[:,:,l])
                     #display("gamma")
                     #display(γ[l,:,t])
+                    #display(fhmm.W[:,:,l] * γ[l,:,t])
                     Ỹ[:,m,t] += fhmm.W[:,:,l] * γ[l,:,t] 
                 end
             end
             Ỹ[:,m,t] = Y[:,t] - Ỹ[:,m,t]
+            display(Ỹ[:,m,t])
         end
     end
     
-    #display("Ỹ")
-    #display(Ỹ)
+    display("Ỹ")
+    display(Ỹ)
    
     for t=1:size(Y)[2]
         for m=1:fhmm.M
@@ -177,20 +178,20 @@ function update_variational_parameters(
           h_new[:,t,m] = WmCi[:,:,m] * Ỹ[:,m,t] - 0.5Δ[:,m]
         end
     end
-    #display("h new")
-    #display(h_new)
+    display("h new")
+    display(h_new)
     
     #display("max at each timestep")
     #display(maximum(h_new, dims=(1)))
     h_new .-= maximum(h_new, dims=1)
     
-    #display("h new after subtracting max")
-    #display(h_new)
+    display("h new after subtracting max")
+    display(h_new)
     
     h_new[:,:,:] = exp.(h_new) 
     
-    #display("h new after exp")
-    #display(h_new)
+    display("h new after exp")
+    display(h_new)
     @assert(!any(isnan.(h_new)))
     @assert(!any(isinf.(h_new)))
     return h_new
@@ -213,8 +214,6 @@ function m_step(fhmm::FHMM,
     for m=1:M
       Yγ[:,:,m] = Y * γ[m,:,:]'
       γγ[:,:,m] = γ[m,:,:] * γ[m,:,:]'
-      γγ[:,:,m] += γγ[:,:,m]'
-      γγ[:,:,m] ./= 2
     end
     
     #display("Yγ")
@@ -223,7 +222,7 @@ function m_step(fhmm::FHMM,
     #display(γγ)
     W_new = copy(fhmm.W)
     for m=1:M
-      U,S,V = svd(γγ[:,:,m])
+      #U,S,V = svd(γγ[:,:,m])
       #display(U)
       #display(S)
       #display(V)
@@ -240,12 +239,30 @@ function m_step(fhmm::FHMM,
           for k=1:fhmm.K
             # is j-> the right order?
             fhmm.P[j,k,m] = sum(ξ[m,j,k,:]) / sum(γ[m,j,1:end-1])
-        end
+          end
+          rs = sum(fhmm.P[j,:,m])
+          if(isapprox(rs,0))
+            fhmm.P[j,:,m] .= 1/K
+          else
+            fhmm.P[j,:,m] ./= rs
+          end
       end
     end
     
     #display("fhmm.P")
     #display(fhmm.P)
+    
+    η = zeros(M, K, K)
+    
+    for m=1:M
+      η[m,:,:] = γγ[:,:,m] * γγ[:,:,m]'
+      gammasum = sum(γγ[:,:,m], dims=1)
+      for k=1:K
+        η[m,k,k] = gammasum[k]
+      end
+      η[m,:,:] .+= η[m,:,:]'
+      η[m,:,:] ./= 2
+    end
                                
     YY=Y*Y'./ T;    
     #display("YY")
@@ -261,20 +278,21 @@ function m_step(fhmm::FHMM,
         #display("fhmm.W[:,:,m] * γ[m,:,t]")
         #display(fhmm.W[:,:,m] * γ[m,:,t])
         #WγY += fhmm.W[:,:,m] * γ[m,:,t] * Y[:,t]'
-        GammaX = γ[m,:,t] * Y[:,t]'
-        #display(sum(γ[m,:,t] * γ[m,:,t]'), dims=1)
-        eta = diagm(diag(sum(γ, dims=(1,3))))
-        eta .+= eta'
-        eta ./= 2
-        eta_inv = pinv(eta)
-        display(eta_inv)
-        WγY += GammaX' * eta_inv * GammaX
+        #display(Yγ[:,:,m])
+        #display("eta")
+        #display(η[m,:,:])
+        #display("pinv eta")
+        #display(pinv(η[m,:,:]))
+        #display(Yγ[:,:,m]')
+        #display(Yγ[:,:,m] * pinv(η[m,:,:]) * Yγ[:,:,m]')
+        WγY +=  (Yγ[:,:,m] * pinv(η[m,:,:]) * Yγ[:,:,m]')
       end
     end
     WγY ./= T
     
     fhmm.C[:,:] = YY - WγY
-    
+    fhmm.C[:,:] += fhmm.C[:,:]'
+    fhmm.C[:,:] ./= 2
     #display("fhmm.C")
     #display(fhmm.C)
     dCov = det(fhmm.C)
@@ -285,7 +303,6 @@ function m_step(fhmm::FHMM,
     #W_diff = norm(W_new) - norm(fhmm.W[:,:,:])
     #display("W_diff $W_diff")
     fhmm.W[:,:,:] = W_new
-
 end
 
 # this is calculating Q({St}) log [ P({St, Yt}) / Q({St})
@@ -309,11 +326,13 @@ function compute_likelihood(
   C⁻¹::Matrix{Float64} = fhmm.C^-1
   
   d = det(fhmm.C)
-  k2=k1/sqrt(det(d));
+  
   if d < 0
     display("Ill-conditioned covariance matrix")
     return
   end
+  
+  k2=k1/sqrt(det(d));
   
   for t=1:T
     for m=1:M
@@ -390,28 +409,31 @@ function fit_sv2!(fhmm::FHMM,
    
     ll = 0
     
-    for i in 1:100
-      for j in 1:10
+    for i in 1:10
+      for j in 1:1
         h_old = copy(h)
         h = update_variational_parameters(fhmm, h, Y, γ)
+        break
+        γ, ξ = forward_backward(fhmm, Y, h, γ, ξ)
         if(abs(norm(h) - norm(h_old)) < tol)
-          #display("Variational params converged in $j iterations")
+          display("Variational params converged in $j iterations")
           break;
         end
-        γ, ξ = forward_backward(fhmm, Y, h, γ, ξ)
       end
+      break
       
-      #if i % 10 == 0
-      ll_old = ll 
-      ll = compute_likelihood(fhmm, Y, γ)
-      if(ll + ll_old < log(tol))
-        display("Converged after $i iterations")
-        break
+      if i % 10 == 0
+        ll_old = ll 
+        ll = compute_likelihood(fhmm, Y, γ)
+        display(ll)
+        if(ll + ll_old < log(tol))
+          display("Converged after $i iterations")
+          break
+        end
       end
-      #end
       m_step(fhmm, h, Y, γ, ξ)
     end
-    display(fhmm.C)
+    
     return h, γ, ξ
 end
 
