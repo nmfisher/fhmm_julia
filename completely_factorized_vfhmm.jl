@@ -222,7 +222,7 @@ function fit!(fhmm::FHMM,
     for iter=1:maxiter       
         # compute bound
         score = bound(fhmm, Y, θ)
-        
+        println("#$(iter): score $score");
         # update expectations
         θ = updateE!(fhmm, Y, θ, verbose=verbose)
         
@@ -235,14 +235,14 @@ function fit!(fhmm::FHMM,
             println("#$(iter): bound $(likelihood[end]) improvement: $(improvement)")
         end
         # check if converged
-        #=
-        if improvement < 1.0e-7
+        
+        if !isinf(improvement) && improvement < 1.0e-7
             if verbose
                 println("#$(iter) converged")
             end
             break
         end
-        =#
+        
         push!(likelihood, score)
     end
 

@@ -99,8 +99,8 @@ function forward_backward(
 
     #display("γ")
     #display(γ)
-    display("ξ")
-    display(ξ)
+    #display("ξ")
+    #display(ξ)
     @assert(!any(isnan.(γ)))
     @assert(!any(isnan.(ξ)))
     return γ, ξ
@@ -221,14 +221,14 @@ function m_step(fhmm::FHMM,
     #display(Yγ)
     #display("γγ")
     #display(γγ)
-    
+    W_new = copy(fhmm.W)
     for m=1:M
       U,S,V = svd(γγ[:,:,m])
       #display(U)
       #display(S)
       #display(V)
       #display(pinv(γγ[:,:,m]))
-      fhmm.W[:,:,m] = Yγ[:,:,m] * pinv(γγ[:,:,m])
+      W_new[:,:,m] = Yγ[:,:,m] * pinv(γγ[:,:,m])
     end
     #display("fhmm.W")
     #display(fhmm.W)
@@ -244,26 +244,48 @@ function m_step(fhmm::FHMM,
       end
     end
     
-    display("fhmm.P")
-    display(fhmm.P)
+    #display("fhmm.P")
+    #display(fhmm.P)
                                
-    YY=sum(Y*Y', dims=2) ./ T;    
-        
-    fhmm.C[:,:] = YY - γY' * pinv(eta) * (γY ./ T)
-    fhmm.C[:,:] += fhmm.C[:,:]
-    fhmm.C[:,:] ./= 2
-    for i=1:fhmm.D
-      fhmm.C[i,i] += 0.01
+    YY=Y*Y'./ T;    
+    #display("YY")
+    #display(YY)
+    WγY = zeros(D,D)
+    for t=1:T
+      for m=1:M
+        #display("t $t m $m")
+        #display("fhmm.W[:,:,m]")
+        #display(fhmm.W[:,:,m])
+        #display("γ[m,:,t]")
+        #display(γ[m,:,t])
+        #display("fhmm.W[:,:,m] * γ[m,:,t]")
+        #display(fhmm.W[:,:,m] * γ[m,:,t])
+        #WγY += fhmm.W[:,:,m] * γ[m,:,t] * Y[:,t]'
+        GammaX = γ[m,:,t] * Y[:,t]'
+        #display(sum(γ[m,:,t] * γ[m,:,t]'), dims=1)
+        eta = diagm(diag(sum(γ, dims=(1,3))))
+        eta .+= eta'
+        eta ./= 2
+        eta_inv = pinv(eta)
+        display(eta_inv)
+        WγY += GammaX' * eta_inv * GammaX
+      end
     end
+    WγY ./= T
     
+    fhmm.C[:,:] = YY - WγY
+    
+    #display("fhmm.C")
+    #display(fhmm.C)
     dCov = det(fhmm.C)
     if(dCov < 0)
       #display(fhmm.C)
       display("Ill-conditioned covariance matrix [ det : $dCov ]")
     end
-    
+    #W_diff = norm(W_new) - norm(fhmm.W[:,:,:])
+    #display("W_diff $W_diff")
+    fhmm.W[:,:,:] = W_new
 
-    
 end
 
 # this is calculating Q({St}) log [ P({St, Yt}) / Q({St})
@@ -327,8 +349,32 @@ function compute_likelihood(
   return likelihood
 end
 
+function fit_sv2_start!(fhmm::FHMM,
+                 Y::AbstractMatrix,
+                 maxiter::Int=100,
+                 tol::Float64=1.0e-5,
+                 fzero::Bool=false,
+                 verbose::Bool=false)
+   D, T = size(Y)
+    M = fhmm.M
+    K = fhmm.K
+    h = zeros(K,T,M)
+    h[:,:,1] = [ 0.1 0.01; 0.05 0.2; 0.27 0.03 ]
+    h[:,:,2] = [ 0.2 0.1; 0.3 0.1; 0.5 0.6 ]
+    γ = zeros(fhmm.M, fhmm.K, T)
+    γ[:,:,1] = [ 0.2 0.5 0.3; 0.8 0.1 0.1 ]
+    γ[:,:,2] = [ 0.5 0.4 0.1; 0.2 0.2 0.6 ]
+    
+    ξ = zeros(fhmm.M, fhmm.K, fhmm.K, T-1)
+    return fit_sv2!(fhmm, Y, h, γ, ξ, maxiter, tol, fzero, verbose)
+end
+    
+
 function fit_sv2!(fhmm::FHMM,
-                 Y::AbstractMatrix; # observation matrix, shape (D, T)
+                 Y::AbstractMatrix, # shape (D, T)
+                 h::Array{Float64,3},
+                 γ::Array{Float64,3},
+                 ξ::Array{Float64,4},
                  maxiter::Int=100,
                  tol::Float64=1.0e-5,
                  fzero::Bool=false,
@@ -340,31 +386,32 @@ function fit_sv2!(fhmm::FHMM,
     # initial values for variational parameter h (probability of a fictitious observation for every chain being in every state at every timestep)
     #h = rand(K, T, M) 
     #h ./= sum(h,dims=(1))
-    h = zeros(K,T,M)
-    h[:,:,1] = [ 0.1 0.01; 0.05 0.2; 0.27 0.03 ]
-    h[:,:,2] = [ 0.2 0.1; 0.3 0.1; 0.5 0.6 ]
-    γ = zeros(fhmm.M, fhmm.K, T)
-    γ[:,:,1] = [ 0.2 0.5 0.3; 0.8 0.1 0.1 ]
-    γ[:,:,2] = [ 0.5 0.4 0.1; 0.2 0.2 0.6 ]
     
-    ξ = zeros(fhmm.M, fhmm.K, fhmm.K, T-1)
    
-    likelihood::Vector{Float64} = zeros(1)
-    #display(h)
-    for i in 1:1000
+    ll = 0
+    
+    for i in 1:100
       for j in 1:10
+        h_old = copy(h)
         h = update_variational_parameters(fhmm, h, Y, γ)
-        #display(h)
+        if(abs(norm(h) - norm(h_old)) < tol)
+          #display("Variational params converged in $j iterations")
+          break;
+        end
         γ, ξ = forward_backward(fhmm, Y, h, γ, ξ)
-        break
       end
       
-      #if i % 100 == 0
-      #  display(compute_likelihood(fhmm, Y, γ))
+      #if i % 10 == 0
+      ll_old = ll 
+      ll = compute_likelihood(fhmm, Y, γ)
+      if(ll + ll_old < log(tol))
+        display("Converged after $i iterations")
+        break
+      end
       #end
       m_step(fhmm, h, Y, γ, ξ)
-      break
     end
-    return γ
+    display(fhmm.C)
+    return h, γ, ξ
 end
 
