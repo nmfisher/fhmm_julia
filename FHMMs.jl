@@ -48,7 +48,10 @@ struct FHMM
         @assert(size(C)[2] == D)
         new(D, K, M, W, π, P, C)
     end
+    
 end
+
+
 
 for fname in [  "completely_factorized_vfhmm", "structured_vfhmm", "structured_vfhmm2" ]
     include(string(fname, ".jl"))
