@@ -7,53 +7,90 @@ module FHMMs
 # "Factorial hidden Markov models."
 # Machine learning 29.2-3 (1997): 245-273.
 
-export FHMM, fit!, fit_sv!, update_variational_parameters
+export fit_structured, base
 
-# 
-# Gaussian Factorial HMM (FHMM)
-# At timestep T, the model will emit a vector of size D drawn from a Gaussian with a mean determined by the state vector K (sum of state vectors M) and covariance C
-#
-struct FHMM
-    D::Int # observation dimensions
-    K::Int # number of states
-    M::Int # number of factors
-    # contributions to the means of Gaussian, shape (D, K, M)
-    W::Array{Float64, 3}    
-    # initial state probability, shape (K, M)
-    π::Array{Float64, 2}
-    # transition matrices, shape (K, K, M)
-    P::Array{Float64, 3}
-    # covariance matrix, shape (D, D)
-    C::Array{Float64, 2}
+struct StructuredFHMM
+  h::Array{Float64,2} # (NT, MK) the variational parameter (internal only)
+  # the forward/backward parameters
+  γ::Array{Float64, 2} # (NT, MK)
+  ξ::Array{Float64, 2} # (MT, K)
+  α::Array{Float64, 2}
+  β::Array{Float64, 2}
+  k1::Float64
+  Y::AbstractMatrix # (NT, D)
+  D::Int # observation dimensions
+  K::Int # number of states
+  M::Int # number of factors
+  T::Int # number of timesteps
+  N::Int # batch size
+  # contributions to the means of Gaussian, shape (MK, D)
+  W::Array{Float64, 2}    
+  # initial state probability, shape (K, M)
+  π::Array{Float64, 2}
+  # transition matrices, shape (KM, M)
+  P::Array{Float64, 2}
+  # covariance matrix, shape (D, D)
+  C::Array{Float64, 2}
+  
+  function StructuredFHMM(
+      Y::AbstractMatrix, 
+      M::Int, 
+      K::Int, 
+      D::Int,
+      T::Int,
+      N::Int)
+      
+      # initialize covariance matrix from observations
+      C = diagm(diag(cov(Y)))
+      
+      # initialize weights (aka μ) from mean of observations
+      W = rand(M*K, D) * sqrt(C)/M + ones(K*M, 1) * mean(Y,dims=1)/M
+      
+      # initialize initial state probabilities
+      π = rand(K,M)
+      π ./= sum(π, dims=1)
+      
+      # initialize transition state probabilities
+      P=rand(K*M,K)
+      P ./= sum(P, dims=2)
+      
+      # initialize variational parameter
+      h = ones(N*T, M*K) /K
+      h ./= sum(h,dims=(1))
+      
+      # initialize forward-backward parameters
+      γ = ones(N*T, M*K)
+      ξ = zeros(M*K, K)
+      
+      # these are internal only, we just preallocate for efficiency
+      α = zeros(N*T, M*K)
+      β = zeros(N*T, M*K)
+      
+      # constant for normal PDF
+      k1=(2*pi)^(-D/2)
 
-    function FHMM(D::Int, K::Int, M::Int)
-        C = let X = randn(D, D); X * X' + I; end
-        new(D, K, M,
-            rand(D, K, M),
-            ones(K, M) ./ (K*M),
-            ones(K, K, M) ./ K,
-            C
-            )
-    end
-    function FHMM(D::Int, K::Int, M::Int, W::Array{Float64,3},  π::Array{Float64, 2}, P::Array{Float64, 3},C::Array{Float64, 2})
-        @assert(size(W)[1] == D)
-        @assert(size(W)[2] == K)
-        @assert(size(W)[3] == M)
-        @assert(size(π)[1] == K)
-        @assert(size(π)[2] == M)
-        @assert(size(P)[1] == K)
-        @assert(size(P)[2] == K)
-        @assert(size(P)[3] == M)
-        @assert(size(C)[1] == D)
-        @assert(size(C)[2] == D)
-        new(D, K, M, W, π, P, C)
-    end
-    
+      new(
+        h, 
+        γ, 
+        ξ, 
+        α, 
+        β, 
+        k1, 
+        Y, 
+        D, 
+        K, 
+        M, 
+        T, 
+        N, 
+        W, 
+        π, 
+        P, 
+        C)
+  end
 end
 
 
-
-for fname in [  "completely_factorized_vfhmm", "structured_vfhmm", "structured_vfhmm2" ]
+for fname in [  "structured_vfhmm2" ]
     include(string(fname, ".jl"))
 end
 
