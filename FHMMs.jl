@@ -39,16 +39,19 @@ struct StructuredFHMM
       D::Int,
       T::Int,
       N::Int)
+
+      @assert(size(Y)[1] == T*N)
+      @assert(size(Y)[2] == D)
       
       # initialize covariance matrix from observations
       C = diagm(diag(cov(Y)))
       
       # initialize weights (aka μ) from mean of observations
-      W = rand(M*K, D) * sqrt(C)/M + ones(K*M, 1) * mean(Y,dims=1)/M
+      W = randn(M*K, D) * sqrt(C)/M + ones(K*M, 1) * mean(Y,dims=1)/M
       
       # initialize initial state probabilities
-      π = rand(K,M)
-      π ./= sum(π, dims=1)
+      π = rand(K,M) 
+      π ./= sum(π, dims=1) 
       
       # initialize transition state probabilities
       P=rand(K*M,K)
@@ -59,7 +62,7 @@ struct StructuredFHMM
       h ./= sum(h,dims=(1))
       
       # initialize forward-backward parameters
-      γ = ones(N*T, M*K)
+      γ = ones(N*T, M*K) /K
       ξ = zeros(M*K, K)
       
       # these are internal only, we just preallocate for efficiency
@@ -67,7 +70,7 @@ struct StructuredFHMM
       β = zeros(N*T, M*K)
       
       # constant for normal PDF
-      k1=(2*pi)^(-D/2)
+      k1=(2*pi)^(-D/2) 
 
       new(
         h, 

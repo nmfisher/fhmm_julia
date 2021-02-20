@@ -23,9 +23,9 @@ function nearestSPD(A::AbstractMatrix)
     #end
     while isposdef(Ahat) == false
       mineig = minimum(eigen(Ahat).values);
-      Ahat = Ahat + (-mineig*k^2 + ϵ)*I;
+      Ahat = Ahat + (-mineig*k^2 + eps(mineig))*I;
       k += 1
-      if k > 1000
+      if k > 10000
         println("Unstable")
         break
       end
@@ -56,7 +56,7 @@ function forward_backward(
       scale[i_k,m]=sum(α[i_k,i_m],dims=2) .+ ϵ
       rdiv!(α[i_k,i_m], scale[i_k,m][1])
       
-      for t=2:T
+      for t=2:T  
         i_t = (t-1)*N+1:t*N # d2
         α[i_t, i_m] = (α[i_t.-N, i_m]* model.P[i_m,:]) .* exph[i_t, i_m]
         scale[i_t,m] = sum(α[i_t, i_m], dims=2) .+ ϵ
@@ -64,27 +64,20 @@ function forward_backward(
       end
       
       # backward pass
-      i_t = (T-1)*N +1:T*N #d2
+      i_t = (T-1)*N+1:T*N #d2
       β[i_t, i_m] = ones(N,K)
       rdiv!(β[i_t, i_m], scale[i_t, m][1])
       for t=T-1:-1:1
         i_t=(t-1)*N+1:t*N # d2
-        β[i_t, i_m] = (β[i_t.+N, i_m] .* exph[i_t.+N,i_m]) * (model.P[i_m,:]')
+        β[i_t, i_m] = (β[i_t.+N, i_m] .* exph[i_t.+N,i_m]) * model.P[i_m,:]'
         rdiv!(β[i_t, i_m], scale[i_t, m][1])
       end
       
       # calculate gamma
       γ[:,i_m] = α[:,i_m] .* β[:,i_m]
-      γ[:,i_m] ./= (sum(γ[:,i_m], dims=2) .+= ϵ)
+      γ[:,i_m] ./= sum(γ[:,i_m], dims=2) # CHECK
+      γ[:,i_m] .+= ϵ
     end
-
-    #@assert(!any(isnan.(α)))
-    #@assert(!any(isnan.(β)))
-    #@assert(!any(isnan.(γ)))
-    #display(γ)
-    #@assert(!any(isapprox.(γ,0)))
-    #@assert(!any(isnan.(model.P)))
-
 
 end
 
@@ -104,14 +97,21 @@ function update_variational_parameters(
       for m=1:M
         i_w=(m-1)*K+1:m*K # the index of this chain's weights
         Wm = model.W[i_w,:]
-        WmCi = Wm * C⁻¹
-        WmCiWm = WmCi * Wm'
-        h[i_s,i_w] = (WmCi * ((Yalt[i_s,:] - Ỹ)') + (WmCiWm * model.γ[i_s, i_w]') - 0.5 .* (diag(WmCiWm) * ones(1,N)))'
-        h[i_s,i_w] .-= maximum(h[i_s,i_w]', dims=1)'
+        Ci = C⁻¹
+        #WmCi = Wm * C⁻¹
+        #WmCiWm = WmCi * Wm'
+        #h[i_s,i_w] = (
+        #  WmCi * ((Yalt[i_s,:] - Ỹ)') + 
+         # (WmCiWm * model.γ[i_s, i_w]') - 
+         # 0.5 .* (diag(WmCiWm) * ones(1,N)))'
+        h[i_s,i_w] = (
+          (Wm * Ci * ((Yalt[i_s,:] - Ỹ)')) + 
+          (Wm * Ci * Wm' * model.γ[i_s, i_w]') - 
+          (0.5 .* (diag(Wm * Ci * Wm') * ones(1,N))))'
+         h[i_s,i_w] .-= (maximum(h[i_s,i_w]', dims=1)' * ones(1,K))
       end
     end
-
-       
+    
     @assert(!any(isinf.(model.h)))    
     @assert(!any(isnan.(model.h)))    
 end
@@ -121,6 +121,7 @@ function m_step(
     Yalt::AbstractMatrix,
     YY::AbstractMatrix)
     exph = exp.(model.h)
+    
     T = model.T
     N = model.N
     D = model.D
@@ -142,7 +143,7 @@ function m_step(
     @assert(!any(isnan.(γY)))    
     
     η = (η + η') ./ 2
-
+    fill!(model.ξ, 0)
     for t=1:T-1
       i_t=(t-1)*N+1:t*N
       i_t1=i_t.+N
@@ -157,13 +158,11 @@ function m_step(
    
     # update parameters
     U,S,V = svd(nearestSPD(η))
-    #@assert(!any(isnan.(U)))    
-    #@assert(!any(isnan.(S)))    
-    #@assert(!any(isnan.(V)))    
+
     Si=zeros(K*M, K*M)
     
     for mk=1:K*M
-      if S[mk] <= maximum(size(S)) * norm(S) * 0.001
+      if S[mk] < maximum(size(S)) * norm(S) * 0.001
         Si[mk,mk] = 0
       else
         Si[mk,mk] = 1/S[mk]
@@ -171,10 +170,9 @@ function m_step(
     end
     
     model.W[:,:,:] = V * Si * U' * γY
-    @assert(!any(isnan.(model.W)))    
+    
     model.C[:,:] = YY - γY' * pinv(η, atol=M*K*eps(norm(η))) * γY / (N*T);
     model.C[:,:] = nearestSPD(model.C + model.C' / 2)
-    @assert(!any(isnan.(model.C)))    
     
     dC = det(model.C)
     
@@ -207,7 +205,7 @@ end
 # this is calculating Q({St}) log [ P({St, Yt}) / Q({St})
 function compute_likelihood(
   model::StructuredFHMM, 
-  Y::AbstractMatrix)
+  Yalt::AbstractMatrix)
   
   K = model.K
   M = model.M
@@ -215,52 +213,49 @@ function compute_likelihood(
   D = model.D
   N = model.N
   γ = model.γ
-  
+
+  k1 = model.k1 
+   
   dd = zeros(Int, K^M, M)
   
-  Wb = zeros(1, K^M, D)
+  Wb = zeros(K^M, D)
   γ_tmp = ones(T*N, K^M)
   
   for i=1:K^M
     dd[i,:] = base(i-1, K, M)
     for m=1:M
-        Wb[1, i,:] += model.W[(m-1)*K + dd[i,m],:]
+        Wb[i,:] += model.W[(m-1)*K + dd[i,m],:]
         γ_tmp[:,i] .*= γ[:, (m-1)*K + dd[i,m]]
     end
   end
   
-  #@assert(!any(isapprox.(γ, 0)))
   ll::Float64 = 0.0
-  logγ = log.(γ .+ ϵ)
-  logP = log.(model.P .+ ϵ)
-  logPi = log.(model.π .+ ϵ)
+  logγ = log.(γ)
+  logP = log.(model.P)
+  logPi = log.(model.π)
   
   C⁻¹ = model.C^-1
     
   d = det(model.C)
-
-  if d == 0
-    display(model.C)
-  end
-  @assert(isposdef(model.C))
-  @assert(d > 0)
   
   if d < 0
     display("Ill-conditioned covariance matrix, aborting");
     display(model.C)
     return ll;
   end
-  
-  k2=model.k1/(sqrt(det(d))) + ϵ
+
+  k2=model.k1/(sqrt(d))
   
   for l=1:K^M
-    d = (ones(N*T, 1) * Wb[:,l,:]) - Y
+    d = (ones(N*T, 1) * vec(Wb[l,:])') - Yalt
     ll -= 0.5 * sum(γ_tmp[:,l] .* sum((d * C⁻¹).*d,dims=2))
   end
 
-  ll *= T * N * log(k2)
-      
-  for t=2:T
+  ll += T * N * log(k2)
+  
+  ll += sum(γ[1:N,:] * vec(logPi)) - sum(γ[1:N,:] .* logγ[1:N,:])
+
+  for t=2:T 
     i_t1 = (t-1)*N+1:t*N
     i_t0 = (t-2)*N+1:(t-1)*N
     for m=1:M
@@ -272,7 +267,6 @@ function compute_likelihood(
     end
   end
 
-  @assert(!isnan(ll))
   return ll
 end
     
@@ -280,10 +274,8 @@ function fit_structured!(model::StructuredFHMM,
                  Y::AbstractMatrix, # shape (N*T, D)
                  iter_v::Int=10,
                  iter_bw::Int=100,
-                 log_iter::Int=10,
                  tol::Float64=1.0e-6,
-                 fzero::Bool=false,
-                 verbose::Bool=false)
+                 ll_every::Int=5)
     N = model.N
     T = model.T
     # reshape Y to TN*p rather than NT*p
@@ -292,14 +284,17 @@ function fit_structured!(model::StructuredFHMM,
         for n=1:model.N
           Yalt[((t-1)*N)+n,:] = Y[((n-1)*T)+t,:]
         end
-    end;
-    YY=Y'*Y/(N*T);
+    end
+    YY=Y'*Y/(N*T) 
       
     ll = 0
-
+    ll_base = 0
+    ll_old = 0
     γ = model.γ
     
     logγ_old = copy(γ)
+    
+    
     
     for i in 1:iter_bw
       for j in 1:iter_v
@@ -307,27 +302,26 @@ function fit_structured!(model::StructuredFHMM,
         forward_backward(model)
         γc = copy(γ)
         γc[findall(x->x == 0,γc)]  .= ϵ
-        logγ = log.(γ .+ ϵ)
+        logγ = log.(γ)
         if j > 1
           γdiff = sum(model.γ .* logγ) - sum(model.γ .* logγ_old)
           if γdiff < N*T*tol
+            display("Variational converged in $j iterations")
             break;
           end
         end
         logγ_old[:,:] = logγ
       end
-            
+      display("Step $i: Likelihood $ll")
+      ll_old = ll
+      ll = compute_likelihood(model, Yalt)
+      if i <= 2
+        ll_base = ll
+      elseif(i % ll_every == 0 &&  (ll - ll_base) < (1 + tol) * (ll_old - ll_base))
+        display("Converged after $i iterations")
+        return
+      end      
       m_step(model, Yalt,YY)
-      if i % 10 == 0
-        display("Step $i: Likelihood $ll")
-        ll_old = ll 
-        ll = compute_likelihood(model, Y)
-        display("Computed ll $ll")
-        if ll + ll_old < log(tol)
-          display("Converged after $i iterations")
-          break
-        end
-      end
     end
 end
 
