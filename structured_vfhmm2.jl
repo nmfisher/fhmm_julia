@@ -312,7 +312,7 @@ function fit_structured!(model::StructuredFHMM,
         end
         logγ_old[:,:] = logγ
       end
-      display("Step $i: Likelihood $ll")
+      display("step $i: log likelihood $ll")
       ll_old = ll
       ll = compute_likelihood(model, Yalt)
       if i <= 2
